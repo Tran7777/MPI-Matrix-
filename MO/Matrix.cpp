@@ -3,157 +3,132 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <concurrent_vector.h>
+#include <algorithm>
+#include<ctime>
 
 using namespace std;
 
+int getNeibourSize(int *aNeinour, int originalMassSize) {
+	int sizeOfNeibour = 0;
+	for (int i = 0; i < originalMassSize; i++) {
+		if (aNeinour[i] != -858993460) {
+			sizeOfNeibour++;
+		}
+	}
+	return sizeOfNeibour;
+}
 
-int main(int argc, char **argv) {
+void prinResult(int iCurrentRank, int *recBuf, int iMatrixLength) {
+	if (iCurrentRank == 0) {
+		cout << iCurrentRank << " process has: ";
+		for (int i = 0; i < iMatrixLength; i++) {
+			cout << recBuf[i] << "  ";
+		}
+	}
+}
 
+struct smallers {
+	bool operator()(const long& a, const long& b) const {
+		return a < b;
+	}
+};
 
-	//finB.open("A.txt");
+vector<int> oddEvenSort(int iCurrentRank, vector<int> Local_Vector, int iMatrixLength, bool Parity) {
+	MPI_Status oStatus;
+	int to;
+	if (Parity) {
+		to = iCurrentRank % 2 == 0 ? iCurrentRank + 1 : iCurrentRank - 1;
+	}
+	else {
+		to = iCurrentRank % 2 != 0 ? iCurrentRank + 1 : iCurrentRank - 1;
+	}
 
-		/*for (int i = 0; i < iMatrixSize; i++) {
-			for (int j = 0; j < iMatrixSize; j++) {
-				fin >> A[i][j];
-				//finB >> B[i][j];
+	vector <int> NeibourLocalVector(iMatrixLength);
+	fill(NeibourLocalVector.begin(), NeibourLocalVector.end(), -858993460);
+
+	MPI_Sendrecv(Local_Vector.data(), Local_Vector.size(), MPI_INT, to, 6, NeibourLocalVector.data(), iMatrixLength, MPI_INT, to, 6, MPI_COMM_WORLD, &oStatus);
+
+	int sizeOfNeibour = getNeibourSize(NeibourLocalVector.data(), iMatrixLength);
+	NeibourLocalVector.resize(sizeOfNeibour);
+
+	int iLocalFullVectorSize = Local_Vector.size() + NeibourLocalVector.size();
+	vector <int> LocalFullVector(iLocalFullVectorSize);
+
+	merge(begin(Local_Vector), end(Local_Vector), begin(NeibourLocalVector), end(NeibourLocalVector), begin(LocalFullVector));
+
+	int start;
+	if (Parity) {
+		start = iCurrentRank % 2 == 0 ? 0 : Local_Vector.size();
+	}
+	else {
+		start = iCurrentRank % 2 == 1 ? 0 : sizeOfNeibour;
+	}
+
+	for (int i = 0; i < Local_Vector.size(); i++) {
+		Local_Vector[i] = LocalFullVector[start + i];
+	}
+	return Local_Vector;
+}
+
+vector<int> sortArray(int iCurrentRank , vector<int>Local_Vector, int iNumberOfPrecesses, int iMatrixLength) {
+	int u = 1;
+	while (u < 16) {
+		if (u % 2 == 1) {
+			Local_Vector = oddEvenSort(iCurrentRank, Local_Vector, iMatrixLength, true);
+		}
+		else if (u % 2 == 0) {
+			if (iCurrentRank != 0 && iCurrentRank < iNumberOfPrecesses - 1) {
+				Local_Vector = oddEvenSort(iCurrentRank, Local_Vector, iMatrixLength, false);
 			}
 		}
-		fin.close();*/
+		u++;
+	}
+	return Local_Vector;
+}
+
+int main(int argc, char **argv) {
 	int iCurrentRank;
 	int iNumberOfPrecesses;
-	const int MASTER_PROCESS = 1;
-	const int iMatrixLength = 6;
-	const int INIT_NUMBER = 0;
+	const int iMatrixLength = 20;
 
 	MPI_Status oStatus;
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &iNumberOfPrecesses);
 	MPI_Comm_rank(MPI_COMM_WORLD, &iCurrentRank);
 
-	int iStripLength = iMatrixLength / (iNumberOfPrecesses);
-
-	int A[iMatrixLength][iMatrixLength] =
-	{ {1, 2, 3, 4, 5, 6},
-	{1, 2, 3, 4, 5, 6},
-	{1, 2, 3, 4, 5, 6},
-	{1, 2, 3, 4, 5, 6},
-	{1, 2, 3, 4, 5, 6} ,
-	{1, 2, 3, 4, 5, 6} };
-
-	int B[iMatrixLength][iMatrixLength] =
-	{ {1, 2, 3, 4, 5, 6},
-		{1, 2, 3, 4, 5, 6},
-		{1, 2, 3, 4, 5, 6},
-		{1, 2, 3, 4, 5, 6},
-		{1, 2, 3, 4, 5, 6},
-		{1, 2, 3, 4, 5, 6} };
-
-	int LocalA[iMatrixLength][iMatrixLength];
-	int LocalB1[iMatrixLength][iMatrixLength];
-	int LocalU[iMatrixLength][iMatrixLength];
-	int LocalC[iMatrixLength][iMatrixLength];
-
-	for (int i = 0; i < iStripLength; i++) {
-		for (int j = 0; j < iMatrixLength; j++) {
-			LocalA[i][j] = A[iCurrentRank * iStripLength + i][j];
+	int rem = (iMatrixLength) % iNumberOfPrecesses; // elements remaining after division among processes
+	int sum = 0;                // Sum of counts. Used to calculate displacements
+	  // buffer where the received data should be stored
+	int *sendcounts = new int[iNumberOfPrecesses];
+	int *displs = new int[iNumberOfPrecesses];
+	// calculate send counts and displacements
+	for (int i = 0; i < iNumberOfPrecesses; i++) {
+		sendcounts[i] = (iMatrixLength) / iNumberOfPrecesses;
+		if (rem > 0) {
+			sendcounts[i]++;
+			rem--;
 		}
+
+		displs[i] = sum;
+		sum += sendcounts[i];
 	}
 
-	for (int i = 0; i < iMatrixLength; i++) {
-		for (int j = 0; j < iStripLength; j++) {
-			LocalB1[i][j] = B[i][iCurrentRank * iStripLength + j];
-		}
-	}
+	int localVectorSize = sendcounts[iCurrentRank];
+	vector<int> Local_Vector(localVectorSize);
 
-	for (int iIterationNumber = 0; iIterationNumber < iNumberOfPrecesses; iIterationNumber++) {
+	vector<int> Orig_Vector = { 17 ,16, 15,14 ,13,12,11,10,9,8,7,6,5,4,3,2,1,0, -1, -2 };
+	MPI_Scatterv(Orig_Vector.data(), sendcounts, displs, MPI_INT, Local_Vector.data(), 100, MPI_INT, 0, MPI_COMM_WORLD);
 
-		int C[iMatrixLength][iMatrixLength];
+	sort(begin(Local_Vector), end(Local_Vector));
+	vector <int> VPrevStateVector(Local_Vector.size());
+	vector <int> recBuf(iMatrixLength);
 
-		if (iIterationNumber != INIT_NUMBER) {
-			int iPreviousProcess = iCurrentRank + 1 > iNumberOfPrecesses - 1 ? 0 : iCurrentRank + 1;
-			MPI_Recv(&LocalB1, iMatrixLength*iMatrixLength, MPI_INT, iPreviousProcess, iIterationNumber, MPI_COMM_WORLD, &oStatus);
-		}
+	vector <int> vFinalLocalVector(Local_Vector.size());
 
-		for (int i = 0; i < iMatrixLength; i++) {
-			for (int j = 0; j < iMatrixLength; j++) {
-				C[i][j] = 0;
-			}
-
-		}
-
-		for (int k = 0; k < iStripLength; k++) {
-			for (int i = 0; i < iStripLength; i++) {
-				C[k][i] = 0;
-				for (int j = 0; j < iMatrixLength; j++) {
-					C[k][i] += LocalA[k][j] * LocalB1[j][i];
-					LocalC[k][i] = C[k][i];
-				}
-			}
-		}
-
-		for (int i = 0; i < iStripLength; i++) {
-			for (int j = 0; j < iStripLength; j++) {
-				LocalU[i][iIterationNumber * iStripLength + j] = LocalC[i][j];
-			}
-		}
-
-		if (iIterationNumber == iNumberOfPrecesses - 1 && iCurrentRank != MASTER_PROCESS) {
-
-			MPI_Send(LocalU, iMatrixLength*iMatrixLength, MPI_INT, MASTER_PROCESS, 999, MPI_COMM_WORLD);
-		}
-		else if (iIterationNumber < iNumberOfPrecesses - 1) {
-			int iNextProcess = iCurrentRank > 0 ? iCurrentRank - 1 : iNumberOfPrecesses - 1;
-			MPI_Send(LocalB1, iMatrixLength*iMatrixLength, MPI_INT, iNextProcess, iIterationNumber + 1, MPI_COMM_WORLD);
-		}
-	}
-
-	if (iCurrentRank == MASTER_PROCESS) {
-		int LocalU3[iMatrixLength][iMatrixLength];
-		int FinalC[iMatrixLength][iMatrixLength];
-		vector<vector<int>>	vFinalC;
-
-		for (int i = 0; i < iMatrixLength; i++) {
-			vector<int>	vFinalCol(iMatrixLength);
-			vFinalC.push_back(vFinalCol);
-		}
-
-		for (int i = 0; i < iStripLength; i++) {
-			for (int j = 0; j < iMatrixLength; j++) {
-				vFinalC[MASTER_PROCESS * iStripLength + i][j] = LocalU[i][j];
-			}
-		}
-
-		for (int i = 0; i < iNumberOfPrecesses; i++) {
-			if (i != MASTER_PROCESS) {
-				MPI_Recv(LocalU3, iMatrixLength*iMatrixLength, MPI_INT, i, 999, MPI_COMM_WORLD, &oStatus);
-				for (int j = 0; j < iStripLength; j++) {
-					for (int k = 0; k < iMatrixLength; k++) {
-						vFinalC[iStripLength * i + j][k] = LocalU3[j][k];
-					}
-				}
-			}
-
-		}
-
-		for (int i = 0; i < iNumberOfPrecesses; i++) {
-			for (int j = 0; j < iStripLength; j++) {
-				for (int k = 0; k < i * iStripLength; k++) {
-					vFinalC[iStripLength * i + j].emplace(
-						vFinalC[iStripLength * i + j].begin(),
-						vFinalC[iStripLength * i + j][iMatrixLength - 1]);
-				}
-
-			}
-		}
-
-		for (int i = 0; i < iMatrixLength; i++) {
-			for (int j = 0; j < iMatrixLength; j++) {
-				cout << vFinalC[i][j] << "  ";
-			}
-			cout << "\n\n";
-		}
-
-	}
+	vFinalLocalVector = sortArray(iCurrentRank,Local_Vector,iNumberOfPrecesses,iMatrixLength);
+	MPI_Gatherv(vFinalLocalVector.data(), Local_Vector.size(), MPI_INT, recBuf.data(), sendcounts, displs,MPI_INT,0,MPI_COMM_WORLD);
+	prinResult(iCurrentRank, recBuf.data(), iMatrixLength);
 
 	MPI_Finalize();
 	return 0;
